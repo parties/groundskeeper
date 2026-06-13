@@ -1,0 +1,13 @@
+{
+  "name": "groundskeeper",
+  "displayName": "Groundskeeper",
+  "description": "Tracks Claude Code skill usage over time, flags skills that have gone cold, and helps you reversibly prune unused personal skills. Configurable thresholds, keep/snooze suppression, and an interactive cleanup. Near-zero token cost, zero dependencies.",
+  "version": "0.1.0",
+  "author": {
+    "name": "zvoque"
+  },
+  "homepage": "https://github.com/zvoque/groundskeeper",
+  "repository": "https://github.com/zvoque/groundskeeper",
+  "license": "MIT",
+  "keywords": ["skills", "usage", "cleanup", "maintenance", "hooks", "tracking"]
+}

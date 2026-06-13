@@ -1,0 +1,15 @@
+{
+  "name": "groundskeeper",
+  "description": "Skill-usage tracking and cleanup for Claude Code.",
+  "owner": {
+    "name": "zvoque",
+    "email": "prod@zvoque.com"
+  },
+  "plugins": [
+    {
+      "name": "groundskeeper",
+      "source": "./plugins/groundskeeper",
+      "description": "Tracks which skills you actually use over time, flags cold/unused ones, and helps you reversibly prune unused personal skills — configurable thresholds, keep/snooze suppression, and an interactive cleanup. Zero dependencies, near-zero token cost."
+    }
+  ]
+}
