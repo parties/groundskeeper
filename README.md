@@ -1,5 +1,10 @@
 # groundskeeper
 
+> Fork of [zvoque/groundskeeper](https://github.com/zvoque/groundskeeper), adding
+> discovery of symlinked skills and nested skill libraries, plus a `removable`
+> flag so cleanup never offers a prune that would be refused. See
+> [Fork changes](#fork-changes).
+
 Skill-usage tracking and cleanup for Claude Code.
 
 You install skills and plugins, and your skill set quietly grows — most of them you never touch again. `groundskeeper` watches which skills you actually invoke, flags the ones that have gone **cold**, and helps you reversibly prune the unused personal ones. Configurable thresholds, keep/snooze when you want to silence a skill, and an interactive cleanup that asks before it touches anything.
@@ -13,7 +18,7 @@ Pure Node.js (`fs`/`path`/`os` only). `node` ships with Claude Code, so there's 
 ## Install
 
 ```
-/plugin marketplace add zvoque/groundskeeper
+/plugin marketplace add parties/groundskeeper
 /plugin install groundskeeper@groundskeeper
 ```
 
@@ -69,11 +74,46 @@ Stored under `~/.claude/groundskeeper/` (survives plugin updates):
 
 - Tracks personal + plugin skills only. Project-scoped skills (`./.claude/skills`) are not tracked.
 - No transcript backfill — the log starts fresh on install.
+- On a symlink-managed setup, cold skills are **reported but not prunable** — see below.
+
+## Fork changes
+
+Upstream discovers a personal skill only when `~/.claude/skills/<name>` is a real
+directory holding its own `SKILL.md`. Two common layouts miss that shape entirely:
+
+- **Symlinked skills.** `~/.claude/skills/<name>` is frequently a symlink into a
+  git repo (a dotfiles checkout, a shared library). `readdirSync`'s `Dirent`
+  reports `isDirectory() === false` for a symlink, so upstream's filter skipped
+  them. On a fully symlink-managed skills dir that means *zero* personal skills
+  were found, `personal_cold` was always empty, and the weekly nudge — which is
+  keyed on it — could never fire.
+- **Nested libraries.** An entry may be a library of skills
+  (`<entry>/skills/<name>/SKILL.md`, how Claude Code loads a skills-dir plugin)
+  rather than one skill. Those are now keyed `<entry>:<name>` and scoped
+  `personal`, with the library name in the `plugin` field.
+
+Directory descent follows symlinks and tracks visited real paths, so a link that
+points back up the tree cannot loop.
+
+### `removable`
+
+Making those skills visible exposed a second problem: `/skill-cleanup` offered to
+disable everything cold, but `disableOne` refuses a composite key and refuses any
+path whose real location is outside `~/.claude/skills` — so every newly visible
+skill would have failed at the point of pruning. Report rows and `discover()` rows
+now carry a `removable` boolean that mirrors those refusals exactly, the report
+adds a `personal_cold_removable` count, and both commands offer a disable only for
+rows where it is `true`.
+
+The practical consequence on a symlink-managed setup: groundskeeper is a
+**reporting** tool there, not a pruning one. Cold skills are listed with the repo
+that owns them, and you prune by deleting from that repo. Keep and snooze still
+work on every skill.
 
 ## Development
 
 ```
-git clone https://github.com/zvoque/groundskeeper
+git clone https://github.com/parties/groundskeeper
 cd groundskeeper
 node tests/run.js
 ```

@@ -107,6 +107,72 @@ const out = execFileSync('node', [path.join(SCRIPTS, 'nudge.js')], { env: ENV })
 yes(/cold 45d\+/.test(out), 'nudge fires after window with cold skills (uses config window)');
 yes(lib.readState(P).last_nudge > now - 8 * day, 'nudge updates last_nudge');
 
+// --- symlinked skills + nested libraries -----------------------------------
+// The shape that used to scan as zero skills: ~/.claude/skills entries that are
+// symlinks into a git repo, and library entries holding skills/<name>/SKILL.md
+// instead of a SKILL.md of their own.
+const EXT = path.join(TMP, 'external');
+const symType = process.platform === 'win32' ? 'junction' : 'dir';
+let symlinksWork = true;
+
+// a single skill living outside the skills dir, linked in
+const extSkill = path.join(EXT, 'linked-solo');
+fs.mkdirSync(extSkill, { recursive: true });
+fs.writeFileSync(path.join(extSkill, 'SKILL.md'), '---\nname: linked-solo\n---\nbody\n');
+fs.utimesSync(path.join(extSkill, 'SKILL.md'), now - 200 * day, now - 200 * day);
+
+// a library of skills, linked in the same way
+const extLib = path.join(EXT, 'linked-lib');
+for (const n of ['alpha', 'beta']) {
+  const d = path.join(extLib, 'skills', n);
+  fs.mkdirSync(d, { recursive: true });
+  fs.writeFileSync(path.join(d, 'SKILL.md'), `---\nname: ${n}\n---\nbody\n`);
+  fs.utimesSync(path.join(d, 'SKILL.md'), now - 200 * day, now - 200 * day);
+}
+
+try {
+  fs.symlinkSync(extSkill, path.join(CFG, 'skills', 'linked-solo'), symType);
+  fs.symlinkSync(extLib, path.join(CFG, 'skills', 'linked-lib'), symType);
+} catch { symlinksWork = false; }
+
+if (!symlinksWork) {
+  console.log('skip - symlink tests (no symlink privilege on this platform)');
+} else {
+  const keys = lib.discover(P).map((r) => r.key);
+  yes(keys.includes('linked-solo'), 'symlinked single skill is discovered');
+  yes(keys.includes('linked-lib:alpha') && keys.includes('linked-lib:beta'), 'symlinked library discovered as lib:skill');
+
+  const byKey = {};
+  for (const r of lib.discover(P)) byKey[r.key] = r;
+  eq(byKey['linked-lib:alpha'].scope, 'personal', 'library skill keeps personal scope');
+  eq(byKey['linked-lib:alpha'].plugin, 'linked-lib', 'library skill records its library name');
+
+  // removable mirrors what disableOne will actually accept
+  eq(lib.isRemovable(P, byKey['linked-solo']), false, 'symlinked skill is not removable (resolves outside skills dir)');
+  eq(lib.isRemovable(P, byKey['linked-lib:alpha']), false, 'library skill is not removable (composite key)');
+  eq(lib.isRemovable(P, { scope: 'personal', key: 'deadold' }), true, 'real in-tree skill is removable');
+  eq(lib.isRemovable(P, { scope: 'plugin', key: 'p:x' }), false, 'plugin skill is not removable');
+
+  // and disableOne agrees, without moving anything
+  yes(/refusing path outside/.test(lib.disableOne(P, 'linked-solo')), 'disableOne refuses a symlinked skill');
+  yes(fs.existsSync(path.join(extSkill, 'SKILL.md')), 'refused symlink target left untouched');
+  yes(fs.existsSync(path.join(CFG, 'skills', 'linked-solo')), 'refused symlink itself left in place');
+
+  // the report exposes the flag and the removable count
+  const rep = lib.report(P);
+  const solo = rep.personal_cold.find((r) => r.skill === 'linked-solo');
+  yes(solo && solo.removable === false, 'report carries removable=false for symlinked cold skill');
+  const dead = rep.personal_cold.find((r) => r.skill === 'deadold');
+  yes(dead && dead.removable === true, 'report carries removable=true for in-tree cold skill');
+  eq(rep.personal_cold_removable, rep.personal_cold.filter((r) => r.removable).length, 'personal_cold_removable matches the flagged rows');
+
+  // a link pointing back up the tree must not loop forever
+  try { fs.symlinkSync(extLib, path.join(extLib, 'skills', 'loop'), symType); } catch {}
+  const t0 = Date.now();
+  lib.discover(P);
+  yes(Date.now() - t0 < 5000, 'discover terminates with a symlink cycle present');
+}
+
 console.log('----');
 console.log(`pass=${pass} fail=${fail}`);
 process.exit(fail ? 1 : 0);
