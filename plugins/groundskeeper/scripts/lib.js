@@ -76,19 +76,16 @@ function readUsage(P) {
 }
 
 // A ~/.claude/skills entry is very often a symlink into a git repo (a dotfiles
-// checkout, a shared skills library) rather than a real directory. Dirent
-// reports isDirectory() === false for those, so filtering on it alone hides
-// every linked skill — which on a symlink-managed setup is all of them.
+// checkout, a shared skills library) rather than a real directory. statSync
+// follows the link; Dirent.isDirectory() does not, which is why filtering on it
+// used to hide every linked skill — on a symlink-managed setup, all of them.
 function isDir(p) {
   try { return fs.statSync(p).isDirectory(); } catch { return false; }
 }
 
 function listDirs(d) {
-  try {
-    return fs.readdirSync(d, { withFileTypes: true })
-      .filter((e) => e.isDirectory() || (e.isSymbolicLink() && isDir(path.join(d, e.name))))
-      .map((e) => e.name);
-  } catch { return []; }
+  try { return fs.readdirSync(d).filter((n) => isDir(path.join(d, n))); }
+  catch { return []; }
 }
 
 function pluginNameFor(skillMd) {
@@ -103,9 +100,10 @@ function pluginNameFor(skillMd) {
   return '';
 }
 
-// Finds every <...>/skills/<name>/SKILL.md beneath root. Descends through
-// symlinked directories (see isDir) and tracks visited real paths, so a link
-// that points back up the tree cannot loop forever.
+// Finds every <...>/skills/<name>/SKILL.md beneath root, descending through
+// symlinked directories (see isDir). The depth cap bounds the walk; the
+// visited-realpath set is what stops a link pointing back up the tree from
+// reporting the same skill twice under two paths.
 function findSkillMds(root) {
   const out = [];
   const seen = new Set();
@@ -117,11 +115,11 @@ function findSkillMds(root) {
     if (seen.has(real)) return;
     seen.add(real);
     let entries;
-    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
-    for (const e of entries) {
-      const full = path.join(dir, e.name);
-      if (e.isDirectory() || (e.isSymbolicLink() && isDir(full))) walk(full, depth + 1);
-      else if (e.name === 'SKILL.md' && re.test(full)) out.push(full);
+    try { entries = fs.readdirSync(dir); } catch { return; }
+    for (const name of entries) {
+      const full = path.join(dir, name);
+      if (isDir(full)) walk(full, depth + 1);
+      else if (name === 'SKILL.md' && re.test(full)) out.push(full);
     }
   })(root, 0);
   return out;
@@ -173,18 +171,17 @@ function writeState(P, st) {
   fs.renameSync(tmp, P.GK_STATE);
 }
 
-// isRemovable mirrors disableOne's two refusals exactly, so a cold row can be
-// reported without implying it can be pruned. disableOne declines a composite
-// key (library/plugin skill) and any path whose real location sits outside the
-// personal skills dir — which is every symlinked-in skill, since moving one
-// would reach into the git repo that owns it.
+// The one gate on disabling, asked ahead of time so a cold row can be reported
+// without implying it can be pruned. A composite key is a library or plugin
+// skill; a path resolving outside the personal skills dir is a symlink into the
+// git repo that owns it, and moving that would reach into someone's worktree.
+// disableOne calls this, so report and prune cannot disagree.
 function isRemovable(P, row) {
-  if (row.scope !== 'personal') return false;
-  if (row.key.includes(':')) return false;
-  try {
-    const resolved = fs.realpathSync(path.join(P.PERSONAL_SKILLS, row.key));
-    return path.dirname(resolved) === fs.realpathSync(P.PERSONAL_SKILLS);
-  } catch { return false; }
+  if (row.scope !== 'personal' || row.key.includes(':')) return false;
+  const src = path.join(P.PERSONAL_SKILLS, row.key);
+  if (!isDir(src)) return false;
+  try { return path.dirname(fs.realpathSync(src)) === fs.realpathSync(P.PERSONAL_SKILLS); }
+  catch { return false; }
 }
 
 // suppression resolver: kept (permanent) or snoozed (until ts)
@@ -264,7 +261,6 @@ function report(P) {
     hot_count: rows.filter((r) => !r.cold && !r.suppressed).length,
     suppressed_count: suppressed.length,
     personal_cold: fmt(coldRows.filter((r) => r.scope === 'personal')),
-    personal_cold_removable: coldRows.filter((r) => r.scope === 'personal' && r.removable).length,
     plugin_cold: fmt(coldRows.filter((r) => r.scope === 'plugin')),
     plugins_fully_cold: pluginsFullyCold,
     suppressed,
@@ -294,16 +290,10 @@ function snoozeRemove(P, name) {
 
 // ---- disable / restore ----
 function disableOne(P, name) {
-  if (name.includes(':')) return `skip '${name}': plugin skills can't be disabled individually`;
+  if (!isRemovable(P, { scope: 'personal', key: name })) {
+    return `skip '${name}': can't be disabled — not a real directory in ${P.PERSONAL_SKILLS}`;
+  }
   const src = path.join(P.PERSONAL_SKILLS, name);
-  let st;
-  try { st = fs.statSync(src); } catch { return `skip '${name}': not found in ${P.PERSONAL_SKILLS}`; }
-  if (!st.isDirectory()) return `skip '${name}': not a directory`;
-
-  const resolved = fs.realpathSync(src);
-  const base = fs.realpathSync(P.PERSONAL_SKILLS);
-  if (path.dirname(resolved) !== base) return `skip '${name}': refusing path outside skills dir`;
-
   fs.mkdirSync(P.GRAVEYARD, { recursive: true });
   const dst = path.join(P.GRAVEYARD, name);
   if (fs.existsSync(dst)) return `skip '${name}': already in graveyard`;

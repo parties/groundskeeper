@@ -138,39 +138,38 @@ try {
 if (!symlinksWork) {
   console.log('skip - symlink tests (no symlink privilege on this platform)');
 } else {
-  const keys = lib.discover(P).map((r) => r.key);
+  const rows = lib.discover(P);
+  const keys = rows.map((r) => r.key);
   yes(keys.includes('linked-solo'), 'symlinked single skill is discovered');
   yes(keys.includes('linked-lib:alpha') && keys.includes('linked-lib:beta'), 'symlinked library discovered as lib:skill');
 
   const byKey = {};
-  for (const r of lib.discover(P)) byKey[r.key] = r;
+  for (const r of rows) byKey[r.key] = r;
   eq(byKey['linked-lib:alpha'].scope, 'personal', 'library skill keeps personal scope');
   eq(byKey['linked-lib:alpha'].plugin, 'linked-lib', 'library skill records its library name');
 
-  // removable mirrors what disableOne will actually accept
+  // disableOne gates on isRemovable, so this is the prune rule for both
   eq(lib.isRemovable(P, byKey['linked-solo']), false, 'symlinked skill is not removable (resolves outside skills dir)');
   eq(lib.isRemovable(P, byKey['linked-lib:alpha']), false, 'library skill is not removable (composite key)');
   eq(lib.isRemovable(P, { scope: 'personal', key: 'deadold' }), true, 'real in-tree skill is removable');
   eq(lib.isRemovable(P, { scope: 'plugin', key: 'p:x' }), false, 'plugin skill is not removable');
 
-  // and disableOne agrees, without moving anything
-  yes(/refusing path outside/.test(lib.disableOne(P, 'linked-solo')), 'disableOne refuses a symlinked skill');
+  // and disableOne refuses without moving anything
+  yes(/can't be disabled/.test(lib.disableOne(P, 'linked-solo')), 'disableOne refuses a symlinked skill');
   yes(fs.existsSync(path.join(extSkill, 'SKILL.md')), 'refused symlink target left untouched');
   yes(fs.existsSync(path.join(CFG, 'skills', 'linked-solo')), 'refused symlink itself left in place');
 
-  // the report exposes the flag and the removable count
+  // the report exposes the flag
   const rep = lib.report(P);
   const solo = rep.personal_cold.find((r) => r.skill === 'linked-solo');
   yes(solo && solo.removable === false, 'report carries removable=false for symlinked cold skill');
   const dead = rep.personal_cold.find((r) => r.skill === 'deadold');
   yes(dead && dead.removable === true, 'report carries removable=true for in-tree cold skill');
-  eq(rep.personal_cold_removable, rep.personal_cold.filter((r) => r.removable).length, 'personal_cold_removable matches the flagged rows');
 
-  // a link pointing back up the tree must not loop forever
+  // a link pointing back up the tree must not report the same skill twice
   try { fs.symlinkSync(extLib, path.join(extLib, 'skills', 'loop'), symType); } catch {}
-  const t0 = Date.now();
-  lib.discover(P);
-  yes(Date.now() - t0 < 5000, 'discover terminates with a symlink cycle present');
+  const looped = lib.discover(P).map((r) => r.key);
+  eq(looped.length, new Set(looped).size, 'symlink cycle yields no duplicate skills');
 }
 
 console.log('----');

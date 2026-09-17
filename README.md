@@ -27,13 +27,7 @@ Restart the session so the hooks load. Usage logs immediately; cold flags appear
 
 ### What counts as a skill
 
-Personal skills come from `~/.claude/skills`, where an entry is either a single
-skill (`<entry>/SKILL.md`) or a **library** of them
-(`<entry>/skills/<name>/SKILL.md`, the layout Claude Code loads as a skills-dir
-plugin). Library skills are keyed `<entry>:<name>`. Entries that are **symlinks**
-into another repo — a dotfiles checkout, a shared skills repo — are followed, so
-a skills dir managed entirely by symlink is tracked normally. Plugin skills are
-found by the same walk over `~/.claude/plugins`.
+An entry in `~/.claude/skills` is either one skill (`<entry>/SKILL.md`) or a **library** of them (`<entry>/skills/<name>/SKILL.md`, the layout Claude Code loads as a skills-dir plugin), keyed `<entry>:<name>`. Entries that are **symlinks** into another repo — a dotfiles checkout, a shared skills repo — are followed. `~/.claude/plugins` is walked the same way.
 
 ### "Cold" definition (configurable)
 
@@ -50,13 +44,7 @@ Kept and snoozed skills never appear in cold reports or nudges.
 
 Disabling **moves** a skill to `~/.claude/skills-disabled/<name>/` with a restore note. Nothing is deleted; restore anytime.
 
-Not every skill can be disabled, so each report row carries a **`removable`** boolean and the report adds a **`personal_cold_removable`** count. A skill is removable only when it is a personal skill whose real path sits directly in `~/.claude/skills`. Three kinds are therefore report-only:
-
-- **plugin skills** — reported on, and a fully-cold plugin is flagged, but never individually deleted;
-- **library skills** (`<library>:<skill>`) — the library owns the directory;
-- **symlinked skills** — the real directory belongs to another repo, so moving it would reach into that repo's working tree.
-
-`removable` mirrors exactly what `audit.js disable` will accept, so `/skill-cleanup` never offers a prune that would then be refused. Keep and snooze work on every skill, removable or not, and are the only actions available for report-only rows.
+Only a personal skill whose real directory sits in `~/.claude/skills` can be disabled, and each report row carries a **`removable`** boolean saying whether it is. Plugin skills, library skills, and symlinked-in skills are report-only: the directory belongs to something else, so moving it would reach into that repo's working tree. `audit.js disable` refuses them and `/skill-cleanup` never offers them — keep and snooze are the actions that work on every row. (A plugin whose skills are *all* cold is still flagged, so you can disable the whole plugin.)
 
 On a skills dir managed entirely by symlink, that makes groundskeeper a reporting tool rather than a pruning one: cold skills are listed, and you prune them in the repo that owns them.
 
@@ -89,7 +77,6 @@ Stored under `~/.claude/groundskeeper/` (survives plugin updates):
 
 - Tracks personal + plugin skills only. Project-scoped skills (`./.claude/skills`) are not tracked.
 - No transcript backfill — the log starts fresh on install.
-- Symlinked and library skills are reported but not prunable — see [Removal is reversible](#removal-is-reversible).
 
 ## Development
 
