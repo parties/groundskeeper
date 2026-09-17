@@ -75,10 +75,19 @@ function readUsage(P) {
   return map;
 }
 
+// A ~/.claude/skills entry is very often a symlink into a git repo (a dotfiles
+// checkout, a shared skills library) rather than a real directory. Dirent
+// reports isDirectory() === false for those, so filtering on it alone hides
+// every linked skill — which on a symlink-managed setup is all of them.
+function isDir(p) {
+  try { return fs.statSync(p).isDirectory(); } catch { return false; }
+}
+
 function listDirs(d) {
   try {
     return fs.readdirSync(d, { withFileTypes: true })
-      .filter((e) => e.isDirectory()).map((e) => e.name);
+      .filter((e) => e.isDirectory() || (e.isSymbolicLink() && isDir(path.join(d, e.name))))
+      .map((e) => e.name);
   } catch { return []; }
 }
 
@@ -94,30 +103,51 @@ function pluginNameFor(skillMd) {
   return '';
 }
 
-function findPluginSkillMds(root) {
+// Finds every <...>/skills/<name>/SKILL.md beneath root. Descends through
+// symlinked directories (see isDir) and tracks visited real paths, so a link
+// that points back up the tree cannot loop forever.
+function findSkillMds(root) {
   const out = [];
+  const seen = new Set();
   const re = /[\\/]skills[\\/][^\\/]+[\\/]SKILL\.md$/;
   (function walk(dir, depth) {
     if (depth > 8) return;
+    let real;
+    try { real = fs.realpathSync(dir); } catch { return; }
+    if (seen.has(real)) return;
+    seen.add(real);
     let entries;
     try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
     for (const e of entries) {
       const full = path.join(dir, e.name);
-      if (e.isDirectory()) walk(full, depth + 1);
-      else if (e.isFile() && e.name === 'SKILL.md' && re.test(full)) out.push(full);
+      if (e.isDirectory() || (e.isSymbolicLink() && isDir(full))) walk(full, depth + 1);
+      else if (e.name === 'SKILL.md' && re.test(full)) out.push(full);
     }
   })(root, 0);
   return out;
 }
 
+// An entry in ~/.claude/skills is one of two shapes, and only the first was
+// ever recognised:
+//   <entry>/SKILL.md                  — a single skill, keyed <entry>
+//   <entry>/**/skills/<name>/SKILL.md — a library, keyed <entry>:<name>
+// The second is how Claude Code loads a skills-dir plugin, so a whole personal
+// library used to scan as zero skills.
 function discover(P) {
   const rows = [];
   for (const name of listDirs(P.PERSONAL_SKILLS)) {
-    const sm = path.join(P.PERSONAL_SKILLS, name, 'SKILL.md');
-    if (!fs.existsSync(sm)) continue;
-    rows.push({ scope: 'personal', key: name, plugin: '', path: sm, mtime: mtimeS(sm) });
+    const entry = path.join(P.PERSONAL_SKILLS, name);
+    const sm = path.join(entry, 'SKILL.md');
+    if (fs.existsSync(sm)) {
+      rows.push({ scope: 'personal', key: name, plugin: '', path: sm, mtime: mtimeS(sm) });
+      continue;
+    }
+    for (const lsm of findSkillMds(entry)) {
+      const skill = path.basename(path.dirname(lsm));
+      rows.push({ scope: 'personal', key: `${name}:${skill}`, plugin: name, path: lsm, mtime: mtimeS(lsm) });
+    }
   }
-  for (const sm of findPluginSkillMds(P.PLUGINS_DIR)) {
+  for (const sm of findSkillMds(P.PLUGINS_DIR)) {
     const skill = path.basename(path.dirname(sm));
     const plugin = pluginNameFor(sm) || 'unknown';
     rows.push({ scope: 'plugin', key: `${plugin}:${skill}`, plugin, path: sm, mtime: mtimeS(sm) });
@@ -141,6 +171,20 @@ function writeState(P, st) {
   const tmp = P.GK_STATE + '.tmp';
   fs.writeFileSync(tmp, JSON.stringify(st, null, 2));
   fs.renameSync(tmp, P.GK_STATE);
+}
+
+// isRemovable mirrors disableOne's two refusals exactly, so a cold row can be
+// reported without implying it can be pruned. disableOne declines a composite
+// key (library/plugin skill) and any path whose real location sits outside the
+// personal skills dir — which is every symlinked-in skill, since moving one
+// would reach into the git repo that owns it.
+function isRemovable(P, row) {
+  if (row.scope !== 'personal') return false;
+  if (row.key.includes(':')) return false;
+  try {
+    const resolved = fs.realpathSync(path.join(P.PERSONAL_SKILLS, row.key));
+    return path.dirname(resolved) === fs.realpathSync(P.PERSONAL_SKILLS);
+  } catch { return false; }
 }
 
 // suppression resolver: kept (permanent) or snoozed (until ts)
@@ -184,6 +228,7 @@ function report(P) {
       scope: d.scope, key: d.key, plugin: d.plugin,
       uses: u ? u.count : 0, last_ts: u ? u.last : null,
       age, idle, cold, suppressed: !!s, supp: s,
+      removable: isRemovable(P, d),
     };
   });
 
@@ -192,6 +237,7 @@ function report(P) {
     last_used: r.last_ts ? isoDay(r.last_ts) : null,
     days_cold: Math.floor(r.idle / 86400),
     uses: r.uses,
+    removable: r.removable,
   }));
 
   const coldRows = rows.filter((r) => r.cold && !r.suppressed);
@@ -218,6 +264,7 @@ function report(P) {
     hot_count: rows.filter((r) => !r.cold && !r.suppressed).length,
     suppressed_count: suppressed.length,
     personal_cold: fmt(coldRows.filter((r) => r.scope === 'personal')),
+    personal_cold_removable: coldRows.filter((r) => r.scope === 'personal' && r.removable).length,
     plugin_cold: fmt(coldRows.filter((r) => r.scope === 'plugin')),
     plugins_fully_cold: pluginsFullyCold,
     suppressed,
@@ -305,7 +352,7 @@ function restoreOne(P, name) {
 }
 
 module.exports = {
-  paths, nowS, report, discover, readUsage,
+  paths, nowS, report, discover, readUsage, isRemovable,
   readConfig, setConfig, DEFAULTS, CONFIG_KEYS,
   readState, writeState, keepAdd, keepRemove, snoozeAdd, snoozeRemove,
   disableOne, restoreOne,
